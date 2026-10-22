@@ -1,0 +1,14 @@
+{
+  "name": "fathomless",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A sonar-stealth descent into the dark.",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "test:world": "node tools/test-world.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^22.15.0"
+  }
+}

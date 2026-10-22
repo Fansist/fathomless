@@ -1,0 +1,35 @@
+import { launch, sleep } from './harness.mjs';
+import { fileURLToPath } from 'node:url';
+const out = (n) => fileURLToPath(new URL('./out/' + n, import.meta.url));
+const h = await launch({});
+const { page } = h;
+const ev = (fn, ...a) => page.evaluate(fn, ...a);
+await page.goto(h.url + '/index.html?seed=flow1', { waitUntil: 'load' });
+await sleep(4500);
+await page.screenshot({ path: out('f01-title.png') });
+await page.click('#btnHow'); await sleep(600); await page.screenshot({ path: out('f02-howto.png') });
+await page.click('#howto [data-close]'); await sleep(300);
+await page.click('#btnSettings'); await sleep(600); await page.screenshot({ path: out('f03-settings.png') });
+await page.click('#settings [data-close]'); await sleep(300);
+await page.click('#btnDive'); await sleep(800);
+await ev(() => window.__fathom.freeze(true));
+// simulate some play: reveal and ping, hit by creature, etc.
+await ev(() => { const f = window.__fathom; const g = f.game; g.loadLevel(3); g.god = false; for (let i = 0; i < 40; i++) f.step(1, false); g.firePing(0.8); for (let i = 0; i < 30; i++) f.step(1, false); f.step(1, true); });
+await page.screenshot({ path: out('f04-depth3.png') });
+await ev(() => { const g = window.__fathom.game; g.pause(); window.__fathom.step(1); });
+await sleep(400); await page.screenshot({ path: out('f05-pause.png') });
+await ev(() => { window.__fathom.game.resume(); });
+await ev(() => { const f = window.__fathom, g = f.game; g.completeLevel(); for (let i = 0; i < 130; i++) f.step(1, false); f.step(1, true); return g.state; }).then((s) => console.log('after levelend:', s));
+await sleep(900); await page.screenshot({ path: out('f06-upgrade.png') });
+await page.keyboard.press('Digit2'); await sleep(300);
+console.log('after pick:', await ev(() => ({ s: window.__fathom.game.state, d: window.__fathom.game.run.depth, ups: window.__fathom.game.run.ups })));
+await ev(() => { const f = window.__fathom, g = f.game; g.hurt(1, g.player.x + 5, g.player.y); g.player.invul = 0; g.hurt(1, g.player.x + 5, g.player.y); g.player.invul = 0; g.hurt(5, g.player.x, g.player.y); for (let i = 0; i < 220; i++) f.step(1, false); f.step(1, true); });
+await sleep(900); await page.screenshot({ path: out('f07-gameover.png') });
+console.log('state:', await ev(() => window.__fathom.game.state));
+await page.click('#endBtns .btn.primary'); await sleep(600);
+console.log('state after retry:', await ev(() => window.__fathom.game.state));
+// victory path
+await ev(() => { const f = window.__fathom, g = f.game; g.loadLevel(12); g.completeLevel(); for (let i = 0; i < 130; i++) f.step(1, false); f.step(1, true); return g.state; }).then((s) => console.log('victory state:', s));
+await sleep(900); await page.screenshot({ path: out('f08-victory.png') });
+console.log('errors', h.errors);
+await h.close();

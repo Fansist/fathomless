@@ -1,0 +1,132 @@
+// Boot, main loop and global key handling.
+import { Input } from './input.js';
+import { AudioEngine } from './audio.js';
+import { Game } from './game.js';
+import { Renderer } from './render.js';
+import { UI } from './ui.js';
+import { load, save } from './storage.js';
+
+const q = new URLSearchParams(location.search);
+const DEFAULTS = { master: 0.8, music: 0.7, shake: true, reduceFlash: false, hints: true, bloom: true };
+const settings = Object.assign({}, DEFAULTS, load('settings', {}));
+if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches && load('settings', null) === null) {
+  settings.shake = false; settings.reduceFlash = true;
+}
+
+const canvas = document.getElementById('view');
+const audio = new AudioEngine();
+audio.volume = settings.master; audio.musicVol = settings.music;
+if (q.has('mute')) audio.muted = true;
+const input = new Input(canvas);
+
+let game, renderer;
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  if (!q.has('noaudio')) audio.init();
+}
+window.addEventListener('pointerdown', unlockAudio, { capture: true });
+window.addEventListener('keydown', unlockAudio, { capture: true });
+
+const ui = new UI(settings, {
+  sfx: (k) => audio.ui(k),
+  dive: (daily) => { unlockAudio(); game.startRun({ daily }); },
+  resume: () => { if (ui.hasModal()) ui.closeModal(); game.resume(); },
+  quit: () => { audio.ui('back'); game.startTitle(); ui.setMode('title'); },
+  upgrade: (id) => game.chooseUpgrade(id),
+  continueEndless: () => { game.continueEndless(); },
+  settingsChanged: () => applySettings(),
+  resetHints: () => { game.hintsSeen = {}; save('hints', {}); },
+  resetBest: () => { game.best = { depth: 0, score: 0, endless: 0, daily: { date: '', depth: 0, score: 0 } }; save('best', game.best); },
+});
+
+function applySettings() {
+  audio.setVolumes(settings.master, settings.music);
+  if (renderer) renderer.quality = settings.bloom ? 'high' : 'low';
+}
+
+game = new Game({ input, audio, ui, settings });
+ui.attach(game);
+renderer = new Renderer(canvas, game);
+applySettings();
+game.startTitle();
+ui.setMode('title');
+window.addEventListener('resize', () => renderer.resize());
+
+// handy for automated tests and tinkering
+let frozen = false;
+window.__fathom = {
+  game, audio, renderer, input, ui, settings,
+  freeze(b = true) { frozen = !!b; },
+  step(n = 1, draw = true) {
+    for (let i = 0; i < n; i++) game.update(1 / 60);
+    if (draw) { renderer.frame(); ui.updateHud(game); }
+    return game.state;
+  },
+  start(seed, depth = 1) {
+    unlockAudio();
+    game.startRun({ seed });
+    if (depth > 1) game.loadLevel(depth);
+    return game;
+  },
+};
+if (q.has('god')) game.god = true;
+if (q.has('low')) { settings.bloom = false; applySettings(); }
+if (q.has('start')) window.__fathom.start(q.get('seed') || undefined, parseInt(q.get('depth') || '1', 10));
+
+/* ---------- global keys ---------- */
+function globalKeys() {
+  if (input.pressed('mute')) {
+    audio.setMuted(!audio.muted);
+    ui.toast(audio.muted ? 'Sound off' : 'Sound on', 1400);
+  }
+  if (input.pressed('fullscreen')) {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => {});
+  }
+  if (input.pressed('pause')) {
+    if (game.state === 'play') game.pause();
+    else if (game.state === 'paused') { if (ui.hasModal()) ui.closeModal(); else game.resume(); }
+    else if (ui.hasModal()) ui.closeModal();
+  }
+  if (game.state === 'upgrade') {
+    ['sel1', 'sel2', 'sel3'].forEach((a, i) => {
+      if (input.pressed(a) && game.upgradeChoices && game.upgradeChoices[i]) game.chooseUpgrade(game.upgradeChoices[i].id);
+    });
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (game.state === 'play') game.pause();
+    audio.suspend();
+  } else audio.resume();
+});
+window.addEventListener('blur', () => { if (game.state === 'play') game.pause(); });
+
+/* ---------- loop ---------- */
+const STEP = 1 / 60;
+let last = performance.now(), acc = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = (now - last) / 1000;
+  last = now;
+  if (frozen) return;
+  if (!(dt > 0)) dt = STEP;
+  if (dt > 0.25) dt = 0.25;
+  acc += dt;
+  input.poll();
+  globalKeys();
+  let steps = 0;
+  while (acc >= STEP && steps < 5) {
+    game.update(STEP);
+    acc -= STEP; steps++;
+  }
+  if (steps === 5) acc = 0;
+  audio.tick(dt, game.state === 'play' || game.state === 'levelend');
+  renderer.frame();
+  ui.updateHud(game);
+  if (steps > 0) input.endFrame();
+}
+requestAnimationFrame((t) => { last = t; frame(t); });
