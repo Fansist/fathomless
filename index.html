@@ -14,7 +14,7 @@
 <body>
 <canvas id="view" aria-label="Game view"></canvas>
 
-<div id="hud" class="hidden" aria-live="polite">
+<div id="hud" class="hidden">
   <div class="hud-left">
     <div class="hull" id="hull" title="Hull"></div>
     <div class="bar energy" title="Energy"><div class="fill" id="energyFill"></div><div class="charge" id="chargeFill"></div><span class="lbl">ENERGY</span></div>
@@ -29,9 +29,11 @@
     <div id="scoreLbl">0</div>
     <div id="pearlLbl">0 pearls</div>
   </div>
-  <div id="toasts"></div>
   <div id="banner"><div class="b-zone"></div><div class="b-depth"></div><div class="b-tag"></div></div>
 </div>
+
+<!-- toasts live outside the HUD so hints and "Sound off" show on every screen; the page owns its own stacking -->
+<div id="toasts" role="status" aria-live="polite" style="position:fixed;z-index:30;pointer-events:none"></div>
 
 <section id="title" class="screen show">
   <div class="title-wrap">
@@ -46,22 +48,23 @@
     </nav>
     <p class="best" id="bestLine"></p>
   </div>
-  <footer class="foot">Headphones recommended &middot; Best on desktop &middot; <span id="verLbl">v1.0</span></footer>
+  <footer class="foot">Headphones recommended &middot; Best on desktop &middot; Enter to dive &middot; <span id="verLbl">v1.0</span></footer>
 </section>
 
-<section id="howto" class="screen modal">
+<section id="howto" class="screen modal" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
   <div class="panel wide">
-    <h2>How to Dive</h2>
+    <h2 id="howtoTitle">How to Dive</h2>
     <div class="cols">
       <div>
         <h3>Controls</h3>
         <ul class="keys">
           <li><span class="k">W A S D</span><span class="k">&uarr; &larr; &darr; &rarr;</span> swim</li>
           <li><span class="k wide">SPACE</span> or <span class="k">hold click</span> charge a sonar ping &mdash; release to send</li>
-          <li><span class="k">SHIFT</span> dash (burst of speed, but loud)</li>
-          <li><span class="k">E</span> or <span class="k">right click</span> drop a decoy buoy</li>
+          <li><span class="k">SHIFT</span> dash (a burst of speed, but loud)</li>
+          <li><span class="k">E</span> or <span class="k">right click</span> drop a decoy buoy that beeps to lure hunters</li>
           <li><span class="k">P</span> / <span class="k">ESC</span> pause &nbsp; <span class="k">M</span> mute &nbsp; <span class="k">F</span> fullscreen</li>
-          <li>Gamepad: stick + A (hold), B dash, X decoy</li>
+          <li>Between depths pick a refit with <span class="k">1</span> <span class="k">2</span> <span class="k">3</span> or a click</li>
+          <li>Gamepad: stick swims, A (hold) pings, B dashes, X drops a decoy, Start pauses</li>
         </ul>
       </div>
       <div>
@@ -71,8 +74,9 @@
           <li><b>Loud pings travel far</b> &mdash; and wake the hunters. A quick tap is a whisper.</li>
           <li><b class="o">Orange</b> echoes are creatures. They <i>hear</i>, they don't see. Drifting slowly is silent; sprinting is not.</li>
           <li>Ghost images show where something <i>was</i>, not where it is.</li>
-          <li><b class="g">Gold</b> pearls feed your energy and score. Decoys lure creatures away.</li>
-          <li>Reach the glowing gate. Twelve depths to the Heart.</li>
+          <li>Pings and dashes spend <b>energy</b>; it recharges while you drift. <b class="g">Gold</b> pearls top it up and add score.</li>
+          <li>Creatures that touch you cost <b>hull</b> (the pips, top left). Repair patches and refits restore it. Decoys draw hunters away.</li>
+          <li>Reach the glowing gate &mdash; a faint arrow beside your craft points the way. Twelve depths to the Heart.</li>
         </ul>
       </div>
     </div>
@@ -80,9 +84,9 @@
   </div>
 </section>
 
-<section id="settings" class="screen modal">
+<section id="settings" class="screen modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
   <div class="panel">
-    <h2>Settings</h2>
+    <h2 id="settingsTitle">Settings</h2>
     <label class="row">Master volume <input type="range" id="setMaster" min="0" max="100"></label>
     <label class="row">Music &amp; ambience <input type="range" id="setMusic" min="0" max="100"></label>
     <label class="row chk"><input type="checkbox" id="setShake"> Screen shake</label>
@@ -94,9 +98,9 @@
   </div>
 </section>
 
-<section id="pause" class="screen modal">
+<section id="pause" class="screen modal" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
   <div class="panel">
-    <h2>Adrift</h2>
+    <h2 id="pauseTitle">Adrift</h2>
     <p class="muted">The deep waits.</p>
     <button class="btn primary" id="btnResume">Resume</button>
     <button class="btn" id="btnPauseSettings">Settings</button>

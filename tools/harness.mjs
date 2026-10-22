@@ -41,6 +41,7 @@ export async function launch({ width = 1280, height = 720, args = [] } = {}) {
   const browser = await puppeteer.launch({
     executablePath: findBrowser(),
     headless: 'new',
+    protocolTimeout: 900000,
     defaultViewport: { width, height, deviceScaleFactor: 1 },
     args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', ...args],
   });
@@ -49,7 +50,7 @@ export async function launch({ width = 1280, height = 720, args = [] } = {}) {
   page.on('pageerror', (e) => errors.push('pageerror: ' + (e.stack || e.message)));
   page.on('console', (m) => {
     const t = m.type();
-    if (t === 'error') errors.push('console.error: ' + m.text());
+    if (t === 'error' && !/AudioContext encountered an error from the audio device/.test(m.text())) errors.push('console.error: ' + m.text());
     else logs.push(t + ': ' + m.text());
   });
   page.on('requestfailed', (r) => errors.push('requestfailed: ' + r.url()));

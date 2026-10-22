@@ -29,6 +29,10 @@ export class UI {
     this.cache = {};
     this.hudVisible = false;
     this.toastEls = [];
+    this.focusStack = [];
+    this.guardUntil = 0;     // screens that pop up mid-action ignore keyboard activation (Space/Enter) for a moment
+    this.lastKeyAt = 0;
+    this.bound = false;
     this.bind();
     this.applySettingsToControls();
   }
@@ -36,8 +40,33 @@ export class UI {
   attach(game) { this.game = game; this.refreshTitle(); }
 
   /* ---------- wiring ---------- */
+  // a click that is really a key-repeat / late release of Space or Enter right after a screen popped up (e.g. while mashing
+  // SPACE to ping at the gate) must not pick an upgrade or restart the dive by accident
+  stray(e) { return e.detail === 0 && performance.now() < this.guardUntil && performance.now() - this.lastKeyAt < 250; }
+
   bind() {
-    const click = (id, fn) => $(id).addEventListener('click', (e) => { e.currentTarget.blur(); this.h.sfx && this.h.sfx('click'); fn(e); });
+    if (this.bound) return;
+    this.bound = true;
+    const click = (id, fn) => $(id).addEventListener('click', (e) => {
+      if (this.stray(e)) return;
+      if (e.detail) e.currentTarget.blur();   // mouse clicks release focus so a later SPACE can never re-trigger the button; keyboard users keep their place
+      this.h.sfx && this.h.sfx('click'); fn(e);
+    });
+    // keyboard navigation inside whichever menu layer is on top (Tab / Shift+Tab / arrows), trapped so focus never leaks behind a modal
+    const keyNote = (e) => { if (e.code === 'Space' || e.code === 'Enter' || e.code === 'NumpadEnter') this.lastKeyAt = performance.now(); };
+    document.addEventListener('keyup', keyNote, true);
+    document.addEventListener('keydown', (e) => {
+      keyNote(e);
+      if (e.ctrlKey || e.metaKey || e.altKey || this.mode === 'play') return;
+      const layer = this.layer();
+      if (!layer) return;
+      const range = e.target && e.target.type === 'range';
+      let d = 0;
+      if (e.code === 'Tab') d = e.shiftKey ? -1 : 1;
+      else if (e.code === 'ArrowDown' || (e.code === 'ArrowRight' && !range)) d = 1;
+      else if (e.code === 'ArrowUp' || (e.code === 'ArrowLeft' && !range)) d = -1;
+      if (d) { e.preventDefault(); this.menuMove(d); }
+    }, true);
     click('btnDive', () => this.h.dive(false));
     click('btnDaily', () => this.h.dive(true));
     click('btnHow', () => this.openModal('howto'));
@@ -46,19 +75,20 @@ export class UI {
     click('btnPauseSettings', () => this.openModal('settings'));
     click('btnPauseHow', () => this.openModal('howto'));
     click('btnQuit', () => this.h.quit());
-    document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', (e) => { e.currentTarget.blur(); this.h.sfx && this.h.sfx('back'); this.closeModal(); }));
+    document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', (e) => { if (e.detail) e.currentTarget.blur(); this.h.sfx && this.h.sfx('back'); this.closeModal(); }));
     document.querySelectorAll('.btn, .card').forEach((b) => b.addEventListener('mouseenter', () => this.h.sfx && this.h.sfx('hover')));
 
     const s = this.settings;
     $('setMaster').addEventListener('input', (e) => { s.master = e.target.value / 100; this.changed(); });
+    $('setMaster').addEventListener('change', () => this.h.sfx && this.h.sfx('click'));   // audible feedback for the new volume
     $('setMusic').addEventListener('input', (e) => { s.music = e.target.value / 100; this.changed(); });
     $('setShake').addEventListener('change', (e) => { s.shake = e.target.checked; this.changed(); });
     $('setFlash').addEventListener('change', (e) => { s.reduceFlash = e.target.checked; this.changed(); });
     $('setHints').addEventListener('change', (e) => { s.hints = e.target.checked; this.changed(); });
     $('setBloom').addEventListener('change', (e) => { s.bloom = e.target.checked; this.changed(); });
-    $('btnResetHints').addEventListener('click', (e) => { e.currentTarget.blur(); this.h.resetHints(); this.toast('Hints reset.', 2000); });
+    $('btnResetHints').addEventListener('click', (e) => { if (e.detail) e.currentTarget.blur(); this.h.resetHints(); this.toast('Hints reset.', 2000, 'sys'); });
     $('btnResetBest').addEventListener('click', (e) => {
-      e.currentTarget.blur();
+      if (e.detail) e.currentTarget.blur();
       if (e.currentTarget.dataset.armed) { this.h.resetBest(); e.currentTarget.textContent = 'Erase records'; delete e.currentTarget.dataset.armed; this.refreshTitle(); }
       else { e.currentTarget.dataset.armed = '1'; e.currentTarget.textContent = 'Click again to confirm'; setTimeout(() => { e.currentTarget.textContent = 'Erase records'; delete e.currentTarget.dataset.armed; }, 3000); }
     });
@@ -89,19 +119,21 @@ export class UI {
     this.show('upgrade', mode === 'upgrade');
     this.show('end', mode === 'gameover' || mode === 'victory');
     if (mode !== 'paused') { this.modalStack = []; ['pause', 'settings', 'howto'].forEach((id) => this.show(id, false)); }
-    if (mode === 'paused') { this.modalStack = []; this.show('pause', true); $('btnResume').focus({ preventScroll: true }); }
+    if (mode === 'paused') { this.modalStack = []; this.focusStack = []; this.show('pause', true); $('btnResume').focus({ preventScroll: true }); }
     if (mode === 'title') this.refreshTitle();
-    if (mode === 'upgrade') { const c = document.querySelector('#cards .card'); if (c) c.focus({ preventScroll: true }); }
-    if (mode === 'title' || mode === 'gameover' || mode === 'victory') {
-      document.querySelectorAll('#toasts .toast').forEach((n) => n.remove());
-    }
+    // popping up mid-action: swallow stray Space/Enter for a moment, and never pre-focus a card that a key-repeat could pick
+    if (mode === 'upgrade' || mode === 'gameover' || mode === 'victory') this.guardUntil = performance.now() + 700;
+    if (mode === 'upgrade' && document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    if (mode === 'title' || mode === 'upgrade' || mode === 'gameover' || mode === 'victory') this.clearToasts();
   }
 
   openModal(id) {
     const cur = this.modalStack[this.modalStack.length - 1];
+    const from = document.activeElement;
     if (cur) this.show(cur, false);
     else if (this.mode === 'paused') this.show('pause', false);
     this.modalStack.push(id);
+    this.focusStack.push(from && from.tagName === 'BUTTON' ? from : null);
     this.show(id, true);
     const first = $(id).querySelector('button, input');
     if (first) first.focus({ preventScroll: true });
@@ -109,11 +141,55 @@ export class UI {
 
   closeModal() {
     const cur = this.modalStack.pop();
+    const back = this.focusStack.pop();
     if (cur) this.show(cur, false);
     const prev = this.modalStack[this.modalStack.length - 1];
     if (prev) this.show(prev, true);
     else if (this.mode === 'paused') this.show('pause', true);
     if (!this.modalStack.length) this.applySettingsToControls();
+    if (back && back.offsetParent !== null) back.focus({ preventScroll: true });   // keyboard users land where they were
+    else if (this.mode === 'paused' && !this.modalStack.length) $('btnResume').focus({ preventScroll: true });
+  }
+
+  /* ---------- menu navigation (keyboard Tab/arrows, gamepad d-pad) ---------- */
+  layer() {   // the layer that currently owns input
+    for (const id of ['howto', 'settings', 'pause', 'upgrade', 'end', 'title']) { const el = $(id); if (el.classList.contains('show')) return el; }
+    return null;
+  }
+
+  focusables(layer) {
+    return Array.from(layer.querySelectorAll('button, input')).filter((el) => !el.disabled && el.offsetParent !== null);
+  }
+
+  menuMove(d) {
+    const layer = this.layer();
+    if (!layer) return false;
+    const list = this.focusables(layer);
+    if (!list.length) return false;
+    const i = list.indexOf(document.activeElement);
+    const n = i < 0 ? (d > 0 ? 0 : list.length - 1) : (i + d + list.length) % list.length;
+    list[n].focus({ preventScroll: true });
+    this.h.sfx && this.h.sfx('hover');
+    return true;
+  }
+
+  // gamepad A / Enter on a focused control; true when it did something
+  menuOk() {
+    const layer = this.layer(), a = document.activeElement;
+    if (!layer) return false;
+    if (a && layer.contains(a) && (a.tagName === 'BUTTON' || a.type === 'checkbox')) { a.click(); return true; }
+    const list = this.focusables(layer);
+    if (list[0]) { list[0].focus({ preventScroll: true }); return true; }
+    return false;
+  }
+
+  // left/right on a focused slider (gamepad); false when the focus is not a slider
+  menuAdjust(d) {
+    const a = document.activeElement;
+    if (!a || a.type !== 'range') return false;
+    a.value = Math.max(0, Math.min(100, +a.value + d * 5));
+    a.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
   }
 
   hasModal() { return this.modalStack.length > 0; }
@@ -173,15 +249,39 @@ export class UI {
     el.classList.remove('warn'); void el.offsetWidth; el.classList.add('warn');
   }
 
-  toast(text, ms = 5000) {
-    const host = $('toasts');
-    const el = document.createElement('div');
-    el.className = 'toast'; el.textContent = text;
-    host.appendChild(el);
-    this.toastEls.push(el);
-    while (this.toastEls.length > 3) { const o = this.toastEls.shift(); o.remove(); }
-    setTimeout(() => el.classList.add('out'), Math.max(500, ms - 800));
-    setTimeout(() => { el.remove(); this.toastEls = this.toastEls.filter((x) => x !== el); }, ms);
+  // key: toasts sharing a key replace each other (so mashing M, or a queue of hints, never stacks)
+  toast(text, ms = 5000, key = '') {
+    let el = key ? this.toastEls.find((t) => t.dataset.key === key) : null;
+    if (el) { clearTimeout(el._t1); clearTimeout(el._t2); el.textContent = text; el.classList.remove('out'); }
+    else {
+      el = document.createElement('div');
+      el.className = 'toast'; el.textContent = text;
+      if (key) el.dataset.key = key;
+      $('toasts').appendChild(el);
+      this.toastEls.push(el);
+      while (this.toastEls.length > 3) this.removeToast(this.toastEls[0]);
+    }
+    el._t1 = setTimeout(() => el.classList.add('out'), Math.max(500, ms - 800));
+    el._t2 = setTimeout(() => this.removeToast(el), ms);
+    return el;
+  }
+
+  removeToast(el) {
+    clearTimeout(el._t1); clearTimeout(el._t2);
+    el.remove();
+    this.toastEls = this.toastEls.filter((x) => x !== el);
+  }
+
+  fadeToast(el) {   // start fading right now, then clean up
+    if (!el || !this.toastEls.includes(el)) return;
+    clearTimeout(el._t1); clearTimeout(el._t2);
+    el.classList.add('out');
+    el._t2 = setTimeout(() => this.removeToast(el), 800);
+  }
+
+  clearToasts() {
+    for (const el of this.toastEls.slice()) this.removeToast(el);
+    $('toasts').textContent = '';
   }
 
   banner(zone, depthLine, tag) {
@@ -209,7 +309,7 @@ export class UI {
       let pips = '';
       for (let k = 0; k < u.max; k++) pips += `<i class="${k < have ? 'on' : k === have ? 'next' : ''}"></i>`;
       b.innerHTML = `<span class="num">${i + 1}</span><svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[u.id] || ''}</svg><h4>${u.name}</h4><p>${u.desc}</p><div class="lvl">${pips}</div>`;
-      b.addEventListener('click', () => this.h.upgrade(u.id));
+      b.addEventListener('click', (e) => { if (!this.stray(e)) this.h.upgrade(u.id); });
       b.addEventListener('mouseenter', () => this.h.sfx && this.h.sfx('hover'));
       host.appendChild(b);
     });
@@ -221,7 +321,7 @@ export class UI {
   showEnd(won, run, info) {
     const panel = document.querySelector('#end .panel');
     panel.classList.toggle('win', won);
-    $('endKicker').textContent = won ? 'YOU REACHED THE HEART' : 'THE DARK TAKES YOU';
+    $('endKicker').textContent = (run.daily ? 'DAILY DIVE  ·  ' : '') + (won ? 'YOU REACHED THE HEART' : 'THE DARK TAKES YOU');
     $('endTitle').textContent = won ? 'Fathomless' : `Lost at ${run.depth * DEPTH_METERS} m`;
     $('endSub').textContent = won
       ? 'Twelve depths. The leviathan sleeps again, and your song echoes in the hollow.'
@@ -235,7 +335,8 @@ export class UI {
     const mk = (label, cls, fn) => {
       const b = document.createElement('button');
       b.className = 'btn ' + cls; b.textContent = label;
-      b.addEventListener('click', (e) => { e.currentTarget.blur(); this.h.sfx && this.h.sfx('click'); fn(); });
+      b.addEventListener('mouseenter', () => this.h.sfx && this.h.sfx('hover'));
+      b.addEventListener('click', (e) => { if (this.stray(e)) return; if (e.detail) e.currentTarget.blur(); this.h.sfx && this.h.sfx('click'); fn(); });
       btns.appendChild(b); return b;
     };
     const first = won
@@ -243,8 +344,9 @@ export class UI {
       : mk(run.daily ? 'Retry daily' : 'Dive again', 'primary', () => this.h.dive(run.daily));
     mk('Title', '', () => this.h.quit());
     panel.querySelectorAll('.newbest').forEach((n) => n.remove());
-    if (info.newScore || info.newDepth) {
-      const n = document.createElement('div'); n.className = 'newbest'; n.textContent = info.newScore ? 'New best score' : 'New deepest dive';
+    if (info.newScore || info.newDepth || info.newDaily) {
+      const n = document.createElement('div'); n.className = 'newbest';
+      n.textContent = [info.newScore && 'New best score', info.newDepth && 'New deepest dive', info.newDaily && !info.newScore && 'New daily best'].filter(Boolean).join('  ·  ');
       panel.insertBefore(n, $('endStats'));
     }
     setTimeout(() => first.focus({ preventScroll: true }), 50);

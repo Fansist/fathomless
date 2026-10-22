@@ -21,7 +21,7 @@ await sleep(400); await page.screenshot({ path: out('f05-pause.png') });
 await ev(() => { window.__fathom.game.resume(); });
 await ev(() => { const f = window.__fathom, g = f.game; g.completeLevel(); for (let i = 0; i < 130; i++) f.step(1, false); f.step(1, true); return g.state; }).then((s) => console.log('after levelend:', s));
 await sleep(900); await page.screenshot({ path: out('f06-upgrade.png') });
-await page.keyboard.press('Digit2'); await sleep(300);
+await ev(() => { const g = window.__fathom.game; g.chooseUpgrade(g.upgradeChoices[1].id); });
 console.log('after pick:', await ev(() => ({ s: window.__fathom.game.state, d: window.__fathom.game.run.depth, ups: window.__fathom.game.run.ups })));
 await ev(() => { const f = window.__fathom, g = f.game; g.hurt(1, g.player.x + 5, g.player.y); g.player.invul = 0; g.hurt(1, g.player.x + 5, g.player.y); g.player.invul = 0; g.hurt(5, g.player.x, g.player.y); for (let i = 0; i < 220; i++) f.step(1, false); f.step(1, true); });
 await sleep(900); await page.screenshot({ path: out('f07-gameover.png') });

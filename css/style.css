@@ -44,16 +44,16 @@ body.playing canvas#view { cursor: none; }
 #scoreLbl { font-size: 15px; letter-spacing: .2em; color: var(--ink); font-variant-numeric: tabular-nums; }
 #pearlLbl { font-size: 12px; letter-spacing: .18em; color: var(--gold); margin-top: 2px; }
 #toasts { position: absolute; left: 50%; bottom: 11%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(720px, 90vw); }
-.toast { padding: 9px 18px; background: rgba(2, 14, 20, .72); border: 1px solid var(--accDim); border-radius: 2px; font-size: 14px; letter-spacing: .06em; color: var(--ink); text-align: center; backdrop-filter: blur(4px);
+.toast { padding: 9px 18px; background: rgba(2, 12, 18, .86); border: 1px solid var(--accDim); border-radius: 2px; font-size: 14px; letter-spacing: .06em; color: var(--ink); text-align: center;
   animation: toastIn .5s ease-out both; box-shadow: 0 0 22px hsl(var(--h) 90% 40% / .25); }
 .toast.out { animation: toastOut .8s ease-in forwards; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes toastOut { to { opacity: 0; transform: translateY(-6px); } }
 #banner { position: absolute; left: 0; right: 0; top: 26%; text-align: center; opacity: 0; }
 #banner.go { animation: banner 5s ease-out forwards; }
-#banner .b-zone { font-size: clamp(30px, 5vw, 64px); font-weight: 200; letter-spacing: .38em; text-indent: .38em; text-transform: uppercase; color: var(--ink); text-shadow: 0 0 30px var(--acc); }
-#banner .b-depth { margin-top: 10px; font-size: 14px; letter-spacing: .5em; color: var(--acc); }
-#banner .b-tag { margin-top: 18px; font-size: 15px; font-style: italic; color: var(--muted); letter-spacing: .08em; }
+#banner .b-zone { font-size: clamp(30px, 5vw, 64px); font-weight: 200; letter-spacing: .38em; text-indent: .38em; text-transform: uppercase; color: var(--ink); text-shadow: 0 1px 3px rgba(0, 4, 8, .85), 0 0 30px var(--acc); }
+#banner .b-depth { margin-top: 10px; font-size: 14px; letter-spacing: .5em; color: var(--acc); text-shadow: 0 0 4px #000, 0 0 10px rgba(0, 4, 8, .9); }
+#banner .b-tag { margin-top: 18px; font-size: 15px; font-style: italic; color: #a6c4ca; letter-spacing: .08em; text-shadow: 0 0 4px #000, 0 0 10px rgba(0, 4, 8, .9), 0 0 18px rgba(0, 4, 8, .8); }
 @keyframes banner { 0% { opacity: 0; letter-spacing: .6em; } 14% { opacity: 1; } 72% { opacity: 1; } 100% { opacity: 0; } }
 
 /* ---------- screens ---------- */
@@ -65,7 +65,9 @@ body.playing canvas#view { cursor: none; }
 .k { display: inline-block; min-width: 24px; padding: 2px 7px; margin: 0 2px; text-align: center; border: 1px solid var(--accDim); border-bottom-width: 3px; border-radius: 4px; font-size: 12px; letter-spacing: .08em; background: rgba(5, 25, 32, .8); color: var(--ink); }
 .muted { color: var(--muted); letter-spacing: .06em; }
 
-#title { background: radial-gradient(ellipse at 50% 45%, rgba(0,4,7,0) 0%, rgba(0,3,5,.42) 55%, rgba(0,2,3,.9) 100%); }
+#title { background:
+  radial-gradient(ellipse 44% 56% at 50% 47%, rgba(0,3,5,.82) 0%, rgba(0,3,5,.62) 48%, rgba(0,3,5,0) 100%),   /* calm pool behind the logo and menu */
+  radial-gradient(ellipse at 50% 45%, rgba(0,4,7,0) 0%, rgba(0,3,5,.42) 55%, rgba(0,2,3,.9) 100%); }
 .title-wrap { position: relative; text-align: center; padding: 20px; }
 .logo { margin: 0; font-size: clamp(44px, 9.5vw, 128px); font-weight: 200; letter-spacing: .26em; text-indent: .26em;
   background: linear-gradient(180deg, #fff 8%, var(--acc) 55%, hsl(var(--h) 80% 38%) 100%); -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -138,3 +140,38 @@ body.playing canvas#view { cursor: none; }
 .end-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
 .newbest { color: var(--gold); letter-spacing: .3em; font-size: 12px; text-transform: uppercase; }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; animation-delay: 0s !important; } }
+
+/* ---------- screen-space FX layers (driven by render.js; composited, so they cost the canvas nothing) ---------- */
+.fx, .fxb { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.fx { opacity: 0; will-change: opacity; }
+.fxb { z-index: 1; mix-blend-mode: screen; }   /* blurred copies of the frame: bloom (render.js upgrades to plus-lighter where supported) */
+#fxBloomB { opacity: .55; }
+#fxBloomC { opacity: .75; }
+#fxVig { z-index: 2; opacity: 1; background: radial-gradient(ellipse 58.6% 104% at 50% 50%, rgba(0, 0, 0, 0) 26.7%, rgba(0, 0, 0, .38) 74.3%, rgba(0, 0, 0, .9) 100%); }
+#fxDanger { z-index: 3; background: radial-gradient(circle at 50% 50%, rgba(255, 40, 10, 0) 30vmin, hsl(14 100% 40%) 75vmax); }
+#fxFlash { z-index: 4; background: hsl(14 90% 50%); mix-blend-mode: screen; }
+#fxFlash.cy { background: hsl(180 90% 50%); }
+
+/* ---------- small / short windows ---------- */
+.panel { scrollbar-width: thin; scrollbar-color: var(--accDim) transparent; }
+.panel::-webkit-scrollbar { width: 8px; }
+.panel::-webkit-scrollbar-thumb { background: var(--accDim); border-radius: 4px; }
+@media (max-height: 560px) {
+  .hud-left { top: 12px; left: 16px; gap: 7px; }
+  .hud-right { top: 12px; right: 18px; }
+  #metersLbl { font-size: 24px; margin-bottom: 2px; }
+  .tagline { margin: 6px 0 16px; }
+  .menu { gap: 8px; }
+  .btn { padding: 9px 24px; }
+  .best { margin-top: 14px; }
+  .panel { padding: 20px 24px; gap: 10px; }
+  .panel h2 { font-size: 22px; }
+  .keys, .tips { gap: 6px; font-size: 13px; }
+  .up-wrap { gap: 12px; }
+  .card { min-height: 190px; padding: 16px 14px 14px; gap: 8px; }
+  .card svg { width: 40px; height: 40px; }
+  .stats { gap: 8px; margin: 6px 0; }
+  .stat { padding: 8px 6px; }
+  .stat b { font-size: 20px; }
+  #toasts { bottom: 7%; }
+}

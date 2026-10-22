@@ -26,8 +26,15 @@ export class Game {
     this.danger = 0;
     this.bot = null;        // optional controller for automated tests
     this.god = false;
-    this.best = load('best', { depth: 0, score: 0, endless: 0, daily: { date: '', depth: 0, score: 0 } });
+    this.best = Game.sanitizeBest(load('best', null));
     this.hintsSeen = load('hints', {});
+    this.hintQ = []; this.hintGap = 0; this.hintN = 0; this.hintEl = null; this.hintCur = '';
+    this.levelTime = 0; this.levelHurt = false; this.levelPearls = 0;
+    this.upgradeChoices = [];
+    this.titleGenMs = 0;
+    // a view of this game whose player is far away: handed to a hunter that just bit you so its proximity sense cannot instantly re-arm it
+    this.deaf = Object.create(this);
+    this.deaf.player = { x: -1e6, y: -1e6, vx: 0, vy: 0, r: 9, dead: false, invul: 0, hull: 3, charging: false };
     this.pings = []; this.enemies = []; this.pickups = []; this.buoys = []; this.particles = []; this.floaters = [];
     this.player = this.makePlayer(0, 0);
     this.run = null;
@@ -40,6 +47,14 @@ export class Game {
     this.demo = null;
     this.exitObj = { x: 0, y: 0, seen: -999, type: 'exit' };
     this.levelSummary = null;
+  }
+
+  // records may come from hand-edited / corrupted storage: always return a complete, numeric structure
+  static sanitizeBest(b) {
+    const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+    b = b && typeof b === 'object' ? b : {};
+    const d = b.daily && typeof b.daily === 'object' ? b.daily : {};
+    return { depth: n(b.depth), score: n(b.score), endless: n(b.endless), daily: { date: typeof d.date === 'string' ? d.date : '', depth: n(d.depth), score: n(d.score) } };
   }
 
   /* ================================================================ */
@@ -57,7 +72,11 @@ export class Game {
     this.run = null;
     this.stats = computeStats({});
     this.audio.chargeStop();
-    const depth = 1 + Math.floor(Math.random() * 11);
+    this.hintQ.length = 0; this.hintGap = 0; this.hintEl = null; this.upgradeChoices = [];
+    this.pingWasHeld = false; this.pingLatch = false;
+    // depths 1-8 only: smaller, cheaper caves keep the (synchronous) title regeneration well under a frame budget hitch
+    const depth = 1 + Math.floor(Math.random() * 8);
+    const t0 = performance.now();
     this.lv = generateLevel('title:' + Math.random().toString(36).slice(2), depth);
     this.rng = new RNG('title');
     this.setupLevelEntities(this.lv, depth, true);
@@ -66,19 +85,23 @@ export class Game {
     this.demo = { nav: new NavField(this.lv), pingT: 1.2, n: 0, age: 0 };
     this.demo.nav.compute(this.lv, 'S', this.lv.exit.x, this.lv.exit.y);
     this.afterLevelLoad();
+    this.titleGenMs = performance.now() - t0;
     this.audio.setBiome(this.lv.biome.id, 1);
   }
 
   startRun(o = {}) {
     const daily = !!o.daily;
-    const seed = o.seed || (daily ? 'daily-' + todayStr() : 'dive-' + Math.floor(Math.random() * 1e9).toString(36));
+    const date = todayStr();
+    const seed = o.seed || (daily ? 'daily-' + date : 'dive-' + Math.floor(Math.random() * 1e9).toString(36));
     this.run = {
-      seed, daily, depth: 1, score: 0, pearls: 0, time: 0, hits: 0, pings: 0, dashes: 0, buoysUsed: 0,
+      seed, daily, date, depth: 1, score: 0, pearls: 0, time: 0, hits: 0, pings: 0, dashes: 0, buoysUsed: 0,
       ups: {}, won: false, endless: false, startedAt: Date.now(),
+      startBest: { depth: this.best.depth, score: this.best.score },
     };
     this.stats = computeStats({});
     this.player = this.makePlayer(0, 0);
     this.player.buoys = 2;
+    this.hintQ.length = 0; this.hintGap = 0; this.hintEl = null;
     this.loadLevel(1);
   }
 
@@ -118,6 +141,7 @@ export class Game {
     this.state = 'play'; this.stateT = 0;
     this.pingLatch = true; this.pingCd = 0.4; this.regenDelay = 0;
     this.danger = 0; this.flash = 0; this.shakeAmt = 0;
+    this.hintGap = Math.max(this.hintGap, 1.1);   // let the depth banner land before any hint
     this.afterLevelLoad();
     this.audio.setBiome(this.lv.biome.id, depth);
     this.audio.newDepth();
@@ -142,6 +166,7 @@ export class Game {
   /* Main update                                                       */
   /* ================================================================ */
   update(dt) {
+    dt = dt > 0 ? Math.min(dt, 0.1) : 0;   // tab restores / debugger pauses must never tunnel creatures through rock
     this.realTime += dt;
     this.stateT += dt;
     switch (this.state) {
@@ -275,7 +300,10 @@ export class Game {
     this.updateBuoys(dt);
 
     // ---- world ----
-    for (const e of this.enemies) e.update(this, dt);
+    for (const e of this.enemies) {
+      if (e.calm > 0) { e.calm -= dt; e.update(this.deaf, dt); }   // just bit you: deaf and blind to your position until the grace timer runs out
+      else e.update(this, dt);
+    }
     this.updatePings(dt);
     this.updatePickups(dt);
     this.checkCollisions();
@@ -286,6 +314,7 @@ export class Game {
     if (Math.hypot(p.x - ex.x, p.y - ex.y) < 26) this.completeLevel();
 
     this.updateHints();
+    this.tickHints(dt);
     this.updateCamera(dt, 6);
   }
 
@@ -380,7 +409,9 @@ export class Game {
     this.audio.echoes(ping.echoes);
     this.addShake(2 + power * 5);
     for (let i = 0; i < 6; i++) this.particle(p.x, p.y, Math.cos(i) * 40, Math.sin(i) * 40, 0.5, 1.6, 'spark');
-    this.hint('afterPing', 'Louder pings travel farther, and wake the hunters. Tap for a quiet one.', 6, 1.4);
+    // the controls hint has done its job once the first ping is out: clear it so the next hint can follow
+    if (this.hintEl && this.hintCur === 'intro') { this.ui.fadeToast(this.hintEl); this.hintEl = null; this.hintGap = Math.min(this.hintGap, 0.4); }
+    this.hint('afterPing', 'Louder pings travel farther and wake the hunters. A quick tap is a whisper.', 6, 1.2, 1);
   }
 
   updatePings(dt) {
@@ -399,14 +430,18 @@ export class Game {
     if (!ref) return;
     if (ref.snapshot) {
       ref.snapshot(this.time);
-      this.hint('creature', 'Orange echoes are creatures. Drift slowly to stay silent.', 6);
+      this.hint('creature', 'Orange echoes are creatures. They hunt by sound: drift slowly to stay silent.', 6.5, 0.6, 2);
     } else {
       ref.seen = this.time;
+      if (ref === this.exitObj) this.hint('exit', 'There is the gate. Reach its glow to dive deeper.', 5.5, 0.5, 3);
     }
   }
 
   noiseEvent(x, y, loud, kind, power = 1) {
-    for (const e of this.enemies) e.hear(this, x, y, loud, kind, power);
+    for (const e of this.enemies) {
+      if (e.calm > 0 && (kind === 'move' || kind === 'dash')) continue;   // swimming away right after a bite must not re-arm the hunter
+      e.hear(this, x, y, loud, kind, power);
+    }
   }
 
   /* ================================================================ */
@@ -465,6 +500,7 @@ export class Game {
       this.run.score += 25;
       p.energy = Math.min(this.stats.maxEnergy, p.energy + 10);
       this.audio.pickup('pearl');
+      this.hint('pearl', 'Pearls refill a little energy and add to your score.', 5, 0.4, 6);
       for (let i = 0; i < 10; i++) this.particle(pk.x, pk.y, (Math.random() - 0.5) * 120, (Math.random() - 0.5) * 120, 0.7, 2, 'gold');
       this.floatText('+25', pk.x, pk.y, 'hsla(44,100%,72%,A)');
     } else if (pk.type === 'buoy') {
@@ -483,6 +519,7 @@ export class Game {
     const p = this.player;
     if (p.dead) return;
     for (const e of this.enemies) {
+      if (e.passive) continue;   // a creature backing off after a bite is harmless for a moment
       const cs = e.circles();
       for (let k = 0; k < cs.length; k++) {
         const c = cs[k];
@@ -498,14 +535,18 @@ export class Game {
 
   afterBite(e) {
     // hunters lose their prey for a moment so a hit is a setback, not a death spiral
-    if (e.type === 'eel' || e.type === 'leviathan') { e.state = 'search'; e.timer = 2.4; e.alert = 0; }
+    if (e.type === 'eel' || e.type === 'leviathan') {
+      e.state = 'search'; e.timer = 2.4; e.alert = 0; e.calm = 2.4;
+      const p = this.player, d = Math.hypot(e.x - p.x, e.y - p.y) || 1;
+      e.vx += ((e.x - p.x) / d) * 380; e.vy += ((e.y - p.y) / d) * 380;   // recoil, so it is not still sitting on you when the invulnerability ends
+    }
     if (e.type === 'angler') { e.state = 'recover'; e.timer = 2.2; }
     if (e.type === 'jelly') { const d = Math.hypot(e.x - this.player.x, e.y - this.player.y) || 1; e.vx += ((e.x - this.player.x) / d) * 120; e.vy += ((e.y - this.player.y) / d) * 120; }
   }
 
   hurt(dmg, sx, sy) {
     const p = this.player;
-    if (p.invul > 0 || p.dead || this.god) return;
+    if (p.invul > 0 || p.dead || this.god || this.state !== 'play') return;
     p.hull -= dmg; p.invul = PLAYER.hurtInvul;
     this.levelHurt = true; this.run.hits++;
     const dx = p.x - sx, dy = p.y - sy, d = Math.hypot(dx, dy) || 1;
@@ -520,8 +561,10 @@ export class Game {
 
   die() {
     const p = this.player;
+    if (p.dead || this.state !== 'play') return;   // not while a gate is closing, paused, or already dying
     p.dead = true; p.hull = 0; p.charging = false;
     this.audio.chargeStop();
+    this.audio.setDanger(0);
     this.audio.gameOver();
     this.state = 'dying'; this.stateT = 0;
     for (let i = 0; i < 50; i++) this.particle(p.x, p.y, (Math.random() - 0.5) * 340, (Math.random() - 0.5) * 340, 1.6, 2.6, 'hurt');
@@ -545,6 +588,7 @@ export class Game {
     }
     this.danger += (dg - this.danger) * (1 - Math.exp(-4 * dt));
     this.audio.setDanger(this.danger);
+    if (this.danger > 0.5) this.hint('hunted', 'Something heard you. Go still, or drop a decoy (E) to pull it away.', 6.5, 0.4, 4);
   }
 
   /* ================================================================ */
@@ -575,10 +619,16 @@ export class Game {
       this.finishRun(true);
       return;
     }
+    this.offerUpgrades();
+  }
+
+  // 1-of-3 refit picker; with every upgrade maxed there is nothing to offer, so skip straight to the next depth
+  offerUpgrades() {
+    const run = this.run;
     const choices = pickUpgrades(this.rng.sub('up' + run.depth), run.ups, 3);
+    this.upgradeChoices = choices;
     if (!choices.length) { this.nextLevel(); return; }
     this.state = 'upgrade'; this.stateT = 0;
-    this.upgradeChoices = choices;
     this.ui.showUpgrade(choices, run, this.levelSummary);
     this.ui.setMode('upgrade');
   }
@@ -587,9 +637,8 @@ export class Game {
     if (this.state !== 'upgrade') return;
     const run = this.run, p = this.player;
     const def = UPGRADES.find((u) => u.id === id);
-    if (!def) return;
+    if (!def || (run.ups[id] || 0) >= def.max) return;
     run.ups[id] = (run.ups[id] || 0) + 1;
-    const old = this.stats;
     this.stats = computeStats(run.ups);
     p.maxHull = this.stats.maxHull;
     if (id === 'hull') p.hull = Math.min(p.maxHull, p.hull + 1);
@@ -599,43 +648,48 @@ export class Game {
     this.nextLevel();
   }
 
-  finishRun(won) {
-    const run = this.run;
-    run.over = true; run.won = run.won || won;
-    const prevBest = { depth: this.best.depth, score: this.best.score };
+  // folds a run into the saved records (max semantics, so calling it again is harmless); says what improved
+  recordBest(run) {
+    const prevBest = run.startBest || { depth: this.best.depth, score: this.best.score };   // records before this run began
     const depthReached = run.depth;
+    let newDaily = false;
     if (run.daily) {
+      const t = run.date || todayStr();   // the day the run STARTED (a dive that crosses midnight UTC still counts for its own cave)
+      if (this.best.daily.date !== t) this.best.daily = { date: t, depth: 0, score: 0 };
       const d = this.best.daily;
-      const t = todayStr();
-      if (d.date !== t) this.best.daily = { date: t, depth: 0, score: 0 };
-      if (depthReached > this.best.daily.depth || (depthReached === this.best.daily.depth && run.score > this.best.daily.score)) {
-        this.best.daily.depth = depthReached; this.best.daily.score = run.score;
+      if (depthReached > d.depth || (depthReached === d.depth && run.score > d.score)) {
+        newDaily = true; d.depth = depthReached; d.score = run.score;
       }
     }
     const newScore = run.score > this.best.score;
     if (newScore) this.best.score = run.score;
+    const newDepth = !run.daily && depthReached > prevBest.depth;
     if (depthReached > this.best.depth && !run.daily) this.best.depth = depthReached;
     save('best', this.best);
+    return { newScore, newDepth, newDaily, best: this.best };
+  }
+
+  // quitting to the title (or closing the tab) mid-dive still banks the score and depth reached
+  abandonRun() {
+    const run = this.run;
+    if (run && !run.over && this.state !== 'title') this.recordBest(run);
+  }
+
+  finishRun(won) {
+    const run = this.run;
+    if (!run || this.state === 'gameover' || this.state === 'victory') return;
+    run.over = true; run.won = run.won || won;
+    const info = this.recordBest(run);
     this.state = won ? 'victory' : 'gameover'; this.stateT = 0;
     if (won) this.audio.victory();
-    this.ui.showEnd(won, run, { newScore, newDepth: depthReached > prevBest.depth, best: this.best });
+    this.ui.showEnd(won, run, info);
     this.ui.setMode(won ? 'victory' : 'gameover');
   }
 
   continueEndless() {
-    if (!this.run) return;
-    this.run.endless = true;
-    this.state = 'levelend';
-    this.afterLevelSkip();
-  }
-
-  afterLevelSkip() {
-    const run = this.run;
-    const choices = pickUpgrades(this.rng.sub('up' + run.depth), run.ups, 3);
-    if (!choices.length) { this.nextLevel(); return; }
-    this.state = 'upgrade'; this.stateT = 0;
-    this.ui.showUpgrade(choices, run, this.levelSummary);
-    this.ui.setMode('upgrade');
+    if (!this.run || this.state !== 'victory') return;
+    this.run.endless = true; this.run.over = false;
+    this.offerUpgrades();
   }
 
   pause() {
@@ -692,22 +746,36 @@ export class Game {
     this.particles.push({ x, y, vx, vy, life, max: life, size, kind });
   }
 
-  hint(id, text, dur = 6, delay = 0) {
-    if (!this.settings.hints || this.hintsSeen[id] || !this.run) return;
-    if (delay > 0) {
-      this.hintsSeen[id] = true;
-      setTimeout(() => this.ui.toast(text, dur * 1000), delay * 1000);
-    } else {
-      this.hintsSeen[id] = true;
-      this.ui.toast(text, dur * 1000);
-    }
-    save('hints', this.hintsSeen);
+  // Hints are queued and shown strictly one at a time (lowest prio number first, then oldest), each at most once ever.
+  // prio: 0 controls, 1 what pings do, 2 creatures, 3 the gate, 5+ situational.
+  hint(id, text, dur = 6, delay = 0, prio = 5) {
+    if (!this.settings.hints || this.hintsSeen[id] || !this.run || this.hintQ.some((h) => h.id === id)) return;
+    this.hintQ.push({ id, text, dur, wait: delay, prio, n: this.hintN++ });
+  }
+
+  tickHints(dt) {
+    const q = this.hintQ;
+    this.hintGap -= dt;
+    if (!q.length) return;
+    for (const h of q) h.wait -= dt;
+    if (this.hintGap > 0 || !this.settings.hints) return;
+    let b = 0;   // strict order: the most important queued hint goes first, and a not-yet-due one holds the others back
+    for (let i = 1; i < q.length; i++) if (q[i].prio < q[b].prio || (q[i].prio === q[b].prio && q[i].n < q[b].n)) b = i;
+    if (q[b].wait > 0) return;
+    const h = q.splice(b, 1)[0];
+    if (this.hintsSeen[h.id]) return;
+    this.hintsSeen[h.id] = true; save('hints', this.hintsSeen);
+    this.hintEl = this.ui.toast(h.text, h.dur * 1000, 'hint'); this.hintCur = h.id;
+    this.hintGap = h.dur + 1.0;
   }
 
   updateHints() {
-    if (this.run.depth === 1) {
-      if (this.levelTime > 1.2) this.hint('intro', 'Hold SPACE to charge a sonar ping. Release to sing into the dark.', 7);
-      if (this.levelTime > 28) this.hint('exit', 'The gate you seek glows faintly. Follow the arrow around your craft.', 7);
+    const run = this.run;
+    if (run.depth === 1) {
+      // controls first (skipped for anyone who already pinged), then what a ping does, then creatures, then the gate
+      if (this.levelTime > 1.0 && run.pings === 0) this.hint('intro', 'Swim with WASD. Hold SPACE to charge a sonar ping, release to send it into the dark.', 6.5, 0, 0);
+      if (this.levelTime > 20 && run.pings === 0) this.hint('pingNudge', 'Lost in the dark? Hold SPACE, then let go: your sonar paints the cave around you.', 6, 0, 0);
+      if (this.levelTime > 16 && this.exitObj.seen < 0) this.hint('exit', 'Find the glowing gate to dive deeper. The faint arrow beside your craft points the way.', 6.5, 0, 3);
     }
   }
 

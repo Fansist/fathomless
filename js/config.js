@@ -46,15 +46,18 @@ export function levelSize(depth) {
   return { gw: Math.min(122 + d * 8, 206), gh: Math.min(78 + d * 5, 128) };
 }
 
+// Creature counts per depth. Tuned with tools/ai-sim.mjs (naive / careful / fog pilots): jellies are the gentle early
+// creature (a few, never the main killer), the real pressure comes from eels (d3+), anglers (d5+), urchins and the
+// leviathan on depth 12. See the AI-lens report for the before/after tables.
 export function spawnTable(depth) {
   const d = depth;
   return {
-    jelly: clamp(Math.round(2 + d * 0.55), 2, 8),
+    jelly: clamp(Math.round(1.5 + d * 0.25), 2, 5),
     urchin: d >= 2 ? clamp(Math.round(d * 0.85), 1, 9) : 0,
-    eel: d >= 3 ? clamp(Math.round((d - 1) * 0.42), 1, 5) : 0,
-    angler: d >= 5 ? clamp(Math.round((d - 3) * 0.4), 1, 4) : 0,
+    eel: d >= 3 ? clamp(Math.round((d - 1) * 0.42) + Math.floor(Math.max(0, d - 12) / 6), 1, 5) : 0,
+    angler: d >= 5 ? clamp(Math.round((d - 3) * 0.4) + Math.floor(Math.max(0, d - 12) / 6), 1, 5) : 0,
     leviathan: d >= MAX_DEPTH ? 1 : 0,
-    pearls: Math.round(9 + d * 1.3),
+    pearls: Math.min(34, Math.round(9 + d * 1.3)),
     buoys: d >= 8 ? 3 : 2,
     patches: d >= 2 ? (d >= MAX_DEPTH ? 2 : 1) : 0,
   };

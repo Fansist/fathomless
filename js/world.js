@@ -71,13 +71,15 @@ function boxBlur(a, W, H, r) {
 /* Coarse cellular-automata cave                                       */
 /* ------------------------------------------------------------------ */
 // Biome-flavoured parameters for the tunnel carver (units are coarse 16px cells).
+// pil = rock-pillar density in the roomiest water, gap = minimum water (cells) kept between a pillar and any wall.
 const CARVE = [
-  { rMin: 2.0, rMax: 2.9, chamberP: 0.035, cMin: 4.5, cMax: 8, target: 0.30, turn: 0.30, lenMin: 28, lenMax: 80 },
-  { rMin: 1.9, rMax: 2.6, chamberP: 0.025, cMin: 4.0, cMax: 7, target: 0.27, turn: 0.46, lenMin: 36, lenMax: 90 },
-  { rMin: 2.0, rMax: 3.0, chamberP: 0.050, cMin: 6.0, cMax: 11, target: 0.33, turn: 0.36, lenMin: 24, lenMax: 70 },
-  { rMin: 2.3, rMax: 3.4, chamberP: 0.040, cMin: 5.0, cMax: 10, target: 0.32, turn: 0.40, lenMin: 28, lenMax: 80 },
+  { rMin: 2.0, rMax: 2.9, chamberP: 0.035, cMin: 4.5, cMax: 8.0, target: 0.30, turn: 0.30, lenMin: 28, lenMax: 80, pil: 0.25, gap: 2.6 },
+  { rMin: 1.9, rMax: 2.6, chamberP: 0.025, cMin: 4.0, cMax: 7.0, target: 0.27, turn: 0.46, lenMin: 36, lenMax: 90, pil: 0.5, gap: 2.6 },
+  { rMin: 1.8, rMax: 2.6, chamberP: 0.022, cMin: 4.2, cMax: 7.0, target: 0.28, turn: 0.42, lenMin: 30, lenMax: 80, pil: 0.5, gap: 2.6 },
+  { rMin: 2.0, rMax: 2.9, chamberP: 0.024, cMin: 4.5, cMax: 7.5, target: 0.29, turn: 0.42, lenMin: 30, lenMax: 80, pil: 0.55, gap: 2.6 },
 ];
-const CARVE_FINAL = { rMin: 3.6, rMax: 5.0, chamberP: 0.05, cMin: 7, cMax: 12, target: 0.36, turn: 0.34, lenMin: 24, lenMax: 70 };
+// the final level must stay passable for the leviathan (nav class XL needs 80 px of water), so its tunnels stay wide and pillars keep a wide berth
+const CARVE_FINAL = { rMin: 3.4, rMax: 4.4, chamberP: 0.035, cMin: 6.5, cMax: 10.5, target: 0.33, turn: 0.36, lenMin: 26, lenMax: 70, pil: 0.55, gap: 6.2 };
 
 // Random-walk worms that bore tunnels and occasionally open a chamber. Always connected by construction.
 function carveNetwork(g, gw, gh, rng, P) {
@@ -108,6 +110,32 @@ function carveNetwork(g, gw, gh, rng, P) {
     }
   }
   return open;
+}
+
+// Rock pillars in the roomiest water: cover to hide behind and obstacles to weave around. A pillar always leaves at least
+// 'gap' cells of water between itself and the walls (and other pillars), so no passage ever gets pinched shut.
+function addPillars(g, gw, gh, rng, pil, gap) {
+  if (!(pil > 0)) return 0;
+  const dr = edtSq(g, gw, gh);
+  const cand = [];
+  for (let y = 8; y < gh - 8; y++) for (let x = 8; x < gw - 8; x++) if (!g[y * gw + x] && dr[y * gw + x] >= (gap + 1.6) * (gap + 1.6)) cand.push(y * gw + x);
+  rng.shuffle(cand);
+  const want = Math.round(pil * cand.length / 170);
+  const placed = [];
+  for (const c of cand) {
+    if (placed.length >= want) break;
+    const x = c % gw, y = (c / gw) | 0;
+    const rp = Math.min(rng.range(2.0, 3.3), Math.sqrt(dr[c]) - gap);
+    if (rp < 1.9) continue;
+    let ok = true;
+    for (const p of placed) if (Math.hypot(p.x - x, p.y - y) < p.r + rp + gap + 3) { ok = false; break; }
+    if (!ok) continue;
+    for (let yy = Math.floor(y - rp); yy <= Math.ceil(y + rp); yy++) for (let xx = Math.floor(x - rp); xx <= Math.ceil(x + rp); xx++) {
+      if ((xx - x) * (xx - x) + (yy - y) * (yy - y) <= rp * rp) g[yy * gw + xx] = 1;
+    }
+    placed.push({ x, y, r: rp });
+  }
+  return placed.length;
 }
 
 function keepLargest(g, gw, gh) {
@@ -207,7 +235,7 @@ const _g = { x: 0, y: 0 };
 // Push a circle out of the walls. e needs x,y,vx,vy. Returns true on contact (and sets e.hitNx/hitNy).
 export function resolveCircle(lv, e, r, bounce = 0) {
   let hit = false;
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 6; i++) { // a few extra passes: the noisy field is not an exact distance, so one push can under-shoot
     const s = sdfAt(lv, e.x, e.y);
     if (s >= r) break;
     gradAt(lv, e.x, e.y, _g);
@@ -240,9 +268,10 @@ export function moveBody(lv, e, r, dt, bounce = 0) {
 }
 
 // Distance along (dx,dy) (unit) until the wall surface, or maxD.
+// (the iteration cap is generous on purpose: a ray skimming a wall takes many tiny steps and must not be cut short)
 export function rayMarch(lv, x, y, dx, dy, maxD) {
   let t = 0;
-  for (let i = 0; i < 110; i++) {
+  for (let i = 0; i < 320; i++) {
     const s = sdfAt(lv, x + dx * t, y + dy * t);
     if (s < 0.6) return t;
     t += Math.max(s * 0.88, 1.2);
@@ -345,7 +374,24 @@ export function flowDir(lv, cls, dist, x, y, tx, ty, out) {
     if (k >= 4 && !(nav[cy * gw + nx] && nav[ny * gw + cx])) continue;
     bd = dm; best = m;
   }
-  if (best < 0) return false;
+  if (best < 0) {
+    // standing outside the nav class (a tight spot after a shove): swim to the nearest navigable cell within two steps
+    if (here < 0) {
+      let nd = 1e9;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= gw || ny >= gh || dist[ny * gw + nx] < 0) continue;
+        const dd = dx * dx + dy * dy;
+        if (dd < nd) { nd = dd; best = ny * gw + nx; }
+      }
+      if (best >= 0) {
+        const ax = (best % gw + 0.5) * COARSE - x, ay = (((best / gw) | 0) + 0.5) * COARSE - y, am = Math.hypot(ax, ay) || 1;
+        out.x = ax / am; out.y = ay / am;
+        return true;
+      }
+    }
+    return false;
+  }
   // look one step further along the gradient to cut corners smoothly
   let tx2 = (best % gw + 0.5) * COARSE, ty2 = (((best / gw) | 0) + 0.5) * COARSE;
   const bx = best % gw, by = (best / gw) | 0;
@@ -390,6 +436,37 @@ export class NavField {
 /* ------------------------------------------------------------------ */
 /* Level generation                                                    */
 /* ------------------------------------------------------------------ */
+// Largest 8-connected patch of one nav class as a mask (same corner rule as bfsNav).
+function biggestPatch(lv, cls, allow) {
+  const nav = lv.nav[cls], gw = lv.gw, gh = lv.gh, n = gw * gh;
+  const lab = new Int32Array(n).fill(-1), q = new Int32Array(n);
+  let best = -1, bestN = 0, nl = 0;
+  for (let c0 = 0; c0 < n; c0++) {
+    if (!nav[c0] || (allow && !allow[c0]) || lab[c0] >= 0) continue;
+    let qh = 0, qt = 0;
+    q[qt++] = c0; lab[c0] = nl;
+    while (qh < qt) {
+      const c = q[qh++], x = c % gw, y = (c / gw) | 0;
+      for (let k = 0; k < 8; k++) {
+        const nx = x + DIRS[k][0], ny = y + DIRS[k][1];
+        if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+        const m = ny * gw + nx;
+        if (!nav[m] || (allow && !allow[m]) || lab[m] >= 0) continue;
+        if (k >= 4 && !(nav[y * gw + nx] && nav[ny * gw + x])) continue;
+        lab[m] = nl; q[qt++] = m;
+      }
+    }
+    if (qt > bestN) { bestN = qt; best = nl; }
+    nl++;
+  }
+  const mask = new Uint8Array(n);
+  if (best >= 0) for (let i = 0; i < n; i++) if (lab[i] === best) mask[i] = 1;
+  return { mask, size: bestN };
+}
+
+// shortest acceptable start -> exit trip in nav cells (8-connected, class S); shorter layouts are re-rolled
+const minRoute = (depth) => Math.min(110, 68 + depth * 4);
+
 function tryGenerate(seed, depth, attempt) {
   const rng = new RNG(seed);
   const { gw, gh } = levelSize(depth);
@@ -402,6 +479,8 @@ function tryGenerate(seed, depth, attempt) {
   let kl = keepLargest(g, gw, gh);
   g.set(kl.g);
   if (kl.area < n * 0.1) return null;
+  const P = final ? CARVE_FINAL : CARVE[biomeFor(depth).id];
+  addPillars(g, gw, gh, rng, P.pil, P.gap);
 
   // 2. pick far-apart start/exit (double BFS sweep) and carve a wide route between them
   const open = [];
@@ -468,6 +547,8 @@ function tryGenerate(seed, depth, attempt) {
   const dist = new Int16Array(n), queue = new Int32Array(n);
   if (bfsNav(lv, 'S', lv.start.x, lv.start.y, dist, queue) < 0) return null;
   if (dist[e] < 0) return null; // exit not reachable for the player
+  const relax = attempt >= 9; // never let a stubborn seed throw: the quality bars drop after nine failed rolls
+  if (!relax && dist[e] < minRoute(depth)) return null; // too short a trip: re-roll
   const reach = [];
   for (let c = 0; c < n; c++) if (dist[c] >= 0) reach.push(c);
   if (reach.length < n * 0.12) return null;
@@ -478,7 +559,10 @@ function tryGenerate(seed, depth, attempt) {
   // 5. content placement
   const table = spawnTable(depth);
   const prng = rng.sub('place');
-  const cells = reach.slice();
+  let cells = reach.slice();
+  // o: minClear/maxClear (coarse cell clearance), minSdf (exact clearance at the spot), minDist (route steps from start),
+  //    avoidStart/avoidExit (px), sep (px to earlier items in 'avoid'), nav (required nav class), r (nominal radius),
+  //    keep (hazards to stay clear of: r + o.r + 22 px)
   const place = (count, o, avoid) => {
     const out = [];
     prng.shuffle(cells);
@@ -487,40 +571,144 @@ function tryGenerate(seed, depth, attempt) {
       const clr = lv.clear[c];
       if (clr < (o.minClear || 0) || clr > (o.maxClear || 1e9)) continue;
       if (dist[c] < (o.minDist || 0)) continue;
+      if (o.nav && !lv.nav[o.nav][c]) continue;
+      if (o.mask && !o.mask[c]) continue;
       const x = (c % gw + 0.5) * COARSE + prng.range(-5, 5);
       const y = (((c / gw) | 0) + 0.5) * COARSE + prng.range(-5, 5);
       const sv = sdfAt(lv, x, y);
-      if (sv < Math.max((o.minClear || 0) * 0.85, 12)) continue;
+      if (sv < (o.minSdf !== undefined ? o.minSdf : Math.max((o.minClear || 0) * 0.85, 12))) continue;
       if (o.avoidStart && Math.hypot(x - lv.start.x, y - lv.start.y) < o.avoidStart) continue;
       if (o.avoidExit && Math.hypot(x - lv.exit.x, y - lv.exit.y) < o.avoidExit) continue;
       let ok = true;
       for (const p of avoid) if (Math.hypot(p.x - x, p.y - y) < Math.max(o.sep || 0, p.sep || 0)) { ok = false; break; }
-      if (!ok) continue;
-      const item = { x, y, sep: o.sep || 0 };
+      if (ok && o.keep) for (const h of o.keep) if (Math.hypot(h.x - x, h.y - y) < h.r + (o.r || 8) + 22) { ok = false; break; }
+      if (!ok || (o.block && !pinchOk(x, y, o.block))) continue;
+      const item = { x, y, sep: o.sep || 0, r: o.r || 8 };
       avoid.push(item); out.push(item);
     }
     return out;
   };
 
+  // A static blocker (urchin, angler) must never pinch a passage shut. Local topology test on the fine field: label the water the player
+  // (r 9) can use inside a window around the spot, with and without a disc of radius R at the spot; if two bits of window border that
+  // were connected become separated, the disc would cut a corridor.
+  const pinchOk = (x, y, R) => {
+    const K = 14, ci = Math.floor(x / CELL), cj = Math.floor(y / CELL);
+    const i0 = Math.max(0, ci - K), i1 = Math.min(W - 1, ci + K), j0 = Math.max(0, cj - K), j1 = Math.min(H - 1, cj + K);
+    const w = i1 - i0 + 1, h = j1 - j0 + 1, m = w * h;
+    const lab = (blockR) => {
+      const L = new Int16Array(m).fill(-1), q = new Int16Array(m);
+      let nl = 0;
+      const open = (i, j) => sdf[(j0 + j) * W + i0 + i] >= 10 && !(blockR > 0 && Math.hypot((i0 + i + 0.5) * CELL - x, (j0 + j + 0.5) * CELL - y) < blockR);
+      for (let c0 = 0; c0 < m; c0++) {
+        if (L[c0] >= 0 || !open(c0 % w, (c0 / w) | 0)) continue;
+        let qh = 0, qt = 0; q[qt++] = c0; L[c0] = nl;
+        while (qh < qt) {
+          const c = q[qh++], i = c % w, j = (c / w) | 0;
+          for (let k = 0; k < 8; k++) {
+            const ni = i + DIRS[k][0], nj = j + DIRS[k][1];
+            if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
+            const nc = nj * w + ni;
+            if (L[nc] >= 0 || !open(ni, nj)) continue;
+            if (k >= 4 && !(open(ni, j) && open(i, nj))) continue;
+            L[nc] = nl; q[qt++] = nc;
+          }
+        }
+        nl++;
+      }
+      return L;
+    };
+    const A = lab(0), B = lab(R), seen = new Map();
+    for (let c = 0; c < m; c++) {
+      const i = c % w, j = (c / w) | 0;
+      if ((i && j && i < w - 1 && j < h - 1) || A[c] < 0) continue; // window border cells only
+      const b = B[c];
+      if (seen.has(A[c])) { if (seen.get(A[c]) !== b) return false; } else seen.set(A[c], b);
+    }
+    return true;
+  };
+
   const hazards = [], loot = [];
   const sp = {};
-  sp.urchins = place(table.urchin, { minClear: 38, minDist: 14, sep: 120, avoidStart: 180, avoidExit: 150 }, hazards);
+  sp.urchins = place(table.urchin, { minClear: 35, minDist: 14, sep: 120, avoidStart: 180, avoidExit: 150, r: 13, block: 30 }, hazards);
+  if (sp.urchins.length < table.urchin) sp.urchins.push(...place(table.urchin - sp.urchins.length, { minClear: 30, minDist: 14, sep: 120, avoidStart: 180, avoidExit: 150, r: 13, block: 30 }, hazards)); // tight cave: settle for narrower spots
+  // Last line of defence: urchins never move, so flood the fine field (water a 9 px player can use, sdf >= 10) with a 24 px disc blocked
+  // around every urchin and drop urchins until the exit is reachable again. Later spawns only use cells that stay reachable.
+  const fineSeen = new Uint8Array(W * H), fineQ = new Int32Array(W * H), fineBlock = new Uint8Array(W * H);
+  const floodWithUrchins = () => {
+    fineBlock.fill(0); fineSeen.fill(0);
+    for (const u of sp.urchins) {
+      const ci = Math.floor(u.x / CELL), cj = Math.floor(u.y / CELL);
+      for (let j = Math.max(0, cj - 4); j <= Math.min(H - 1, cj + 4); j++) for (let i = Math.max(0, ci - 4); i <= Math.min(W - 1, ci + 4); i++) {
+        if (Math.hypot((i + 0.5) * CELL - u.x, (j + 0.5) * CELL - u.y) < 24) fineBlock[j * W + i] = 1;
+      }
+    }
+    const open = (i) => sdf[i] >= 10 && !fineBlock[i];
+    let qh = 0, qt = 0;
+    const s0 = Math.floor(lv.start.y / CELL) * W + Math.floor(lv.start.x / CELL);
+    fineQ[qt++] = s0; fineSeen[s0] = 1;
+    while (qh < qt) {
+      const c = fineQ[qh++], x = c % W, y = (c / W) | 0;
+      for (let k = 0; k < 8; k++) {
+        const nx = x + DIRS[k][0], ny = y + DIRS[k][1];
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const m = ny * W + nx;
+        if (fineSeen[m] || !open(m)) continue;
+        if (k >= 4 && !(open(y * W + nx) && open(ny * W + x))) continue;
+        fineSeen[m] = 1; fineQ[qt++] = m;
+      }
+    }
+  };
+  floodWithUrchins();
+  while (sp.urchins.length && !fineSeen[Math.floor(lv.exit.y / CELL) * W + Math.floor(lv.exit.x / CELL)]) { const u = sp.urchins.pop(); hazards.splice(hazards.indexOf(u), 1); floodWithUrchins(); }
+  const safe = new Uint8Array(n);
+  for (let c = 0; c < n; c++) {
+    const i = (c % gw) * 2, j = ((c / gw) | 0) * 2;
+    safe[c] = dist[c] >= 0 ? (fineSeen[j * W + i] | fineSeen[j * W + i + 1] | fineSeen[(j + 1) * W + i] | fineSeen[(j + 1) * W + i + 1]) : 0;
+  }
+  cells = cells.filter((c) => safe[c]);
+  // jellies and anglers navigate with the L-class field: keep them in the big connected L patch so sound can always lure them
+  const lmask = biggestPatch(lv, 'L', safe).mask;
   sp.anglers = [];
   if (table.angler) {
-    const raw = place(table.angler, { minClear: 17, maxClear: 30, minDist: 28, sep: 200, avoidStart: 300, avoidExit: 160 }, hazards);
+    const raw = place(table.angler, { minClear: 25, maxClear: 44, minDist: 28, sep: 200, avoidStart: 300, avoidExit: 160, r: 17, mask: lmask, block: 32 }, hazards);
     const gtmp = { x: 0, y: 0 };
     for (const p of raw) {
       gradAt(lv, p.x, p.y, gtmp);
       // needs open water in front of it, otherwise it would block a tunnel
-      if (sdfAt(lv, p.x + gtmp.x * 70, p.y + gtmp.y * 70) < 36) { p.bad = true; continue; }
+      if (sdfAt(lv, p.x + gtmp.x * 70, p.y + gtmp.y * 70) < 36) { hazards.splice(hazards.indexOf(p), 1); continue; }
       sp.anglers.push({ x: p.x, y: p.y, a: Math.atan2(gtmp.y, gtmp.x) });
     }
   }
-  sp.eels = place(table.eel, { minClear: 22, minDist: 30, sep: 260, avoidStart: 380 }, hazards);
-  sp.jellies = place(table.jelly, { minClear: 26, minDist: 20, sep: 150, avoidStart: 300 }, hazards);
-  sp.pearls = place(table.pearls, { minClear: 20, minDist: 8, sep: 80 }, loot);
-  sp.buoys = place(table.buoys, { minClear: 22, minDist: 16, sep: 260 }, loot);
-  sp.patches = place(table.patches, { minClear: 22, minDist: 24, sep: 320, avoidStart: 300 }, loot);
+  sp.eels = place(table.eel, { minClear: 22, minDist: 30, sep: 260, avoidStart: 380, avoidExit: 150, r: 11 }, hazards);
+  sp.jellies = place(table.jelly, { minClear: 26, minDist: 20, sep: 150, avoidStart: 300, avoidExit: 120, r: 15, mask: lmask }, hazards);
+  sp.leviathan = null;
+  lv.xlCells = [];
+  if (table.leviathan) {
+    // the boss needs a big connected sea it can actually swim (nav XL); re-roll the level if there isn't one
+    const xp = biggestPatch(lv, 'XL', safe);
+    if (xp.size < reach.length * (relax ? 0.12 : 0.35)) return null;
+    // it spawns in a roomy, far-off part of that sea, clear of every other hazard
+    let lp = place(1, { minClear: 46, minSdf: 40, minDist: 40, mask: xp.mask, sep: 200, avoidStart: 380, avoidExit: 220, r: 27 }, hazards)[0];
+    if (!lp) lp = place(1, { minClear: 42, minSdf: 36, minDist: 20, mask: xp.mask, sep: 120, avoidStart: 300, r: 27 }, hazards)[0];
+    if (!lp) {
+      const xl = reach.filter((c) => xp.mask[c]);
+      if (xl.length) { const c = xl[prng.int(0, xl.length - 1)]; lp = { x: (c % gw + 0.5) * COARSE, y: (((c / gw) | 0) + 0.5) * COARSE }; }
+    }
+    if (lp) {
+      sp.leviathan = { x: lp.x, y: lp.y };
+      const d3 = new Int16Array(n), q3 = new Int32Array(n);
+      bfsNav(lv, 'XL', lp.x, lp.y, d3, q3);
+      for (let k = 0; k < n; k++) if (d3[k] >= 0) lv.xlCells.push(k);
+    }
+  }
+  // loot keeps clear of every hazard so nothing sits inside a creature on spawn. The rare pickups (repair patches, buoys) go first
+  // and spread out among themselves only; pearls then fill in around them.
+  const rare = [];
+  sp.patches = place(table.patches, { minClear: 22, minDist: 24, sep: 320, avoidStart: 300, r: 11, keep: hazards }, rare);
+  sp.buoys = place(table.buoys, { minClear: 22, minDist: 16, sep: 260, r: 10, keep: hazards }, rare);
+  const keepAll = hazards.concat(rare);
+  sp.pearls = place(table.pearls, { minClear: 20, minDist: 8, sep: 80, r: 8, keep: keepAll }, loot);
   // sweeten the pearls: some come in small clusters
   const extra = [];
   for (let i = 0; i < sp.pearls.length; i += 2) {
@@ -528,24 +716,13 @@ function tryGenerate(seed, depth, attempt) {
     for (let k = 0; k < 2; k++) {
       const ang = prng.range(0, TAU), rr = prng.range(16, 26);
       const x = p.x + Math.cos(ang) * rr, y = p.y + Math.sin(ang) * rr;
-      if (sdfAt(lv, x, y) > 14) extra.push({ x, y });
+      if (sdfAt(lv, x, y) <= 14) continue;
+      let ok = true;
+      for (const h of keepAll) if (Math.hypot(h.x - x, h.y - y) < h.r + 8 + 22) { ok = false; break; }
+      if (ok) extra.push({ x, y });
     }
   }
   sp.pearls.push(...extra);
-  sp.leviathan = null;
-  lv.xlCells = [];
-  if (table.leviathan) {
-    const xl = [];
-    for (const c of reach) if (lv.nav.XL[c] && dist[c] >= 40) xl.push(c);
-    const pool = xl.length ? xl : reach.filter((c) => lv.nav.XL[c]);
-    if (pool.length) {
-      const c = pool[prng.int(0, pool.length - 1)];
-      sp.leviathan = { x: (c % gw + 0.5) * COARSE, y: (((c / gw) | 0) + 0.5) * COARSE };
-      const d3 = new Int16Array(n), q3 = new Int32Array(n);
-      bfsNav(lv, 'XL', sp.leviathan.x, sp.leviathan.y, d3, q3);
-      for (let k = 0; k < n; k++) if (d3[k] >= 0) lv.xlCells.push(k);
-    }
-  }
   lv.spawns = sp;
 
   // patrol waypoints for hunters
@@ -563,16 +740,20 @@ function tryGenerate(seed, depth, attempt) {
   for (let tries = 0; surf.length && tries < wantFlora * 8 && flora.length < wantFlora; tries++) {
     const idx = surf[frng.int(0, surf.length - 1)];
     const fx = idx % W, fy = (idx / W) | 0;
-    const sv = sdf[idx];
-    const px = (fx + 0.5) * CELL, py = (fy + 0.5) * CELL;
-    gradAt(lv, px, py, gtmp);
-    const bx = px - gtmp.x * sv, by = py - gtmp.y * sv;
+    let bx = (fx + 0.5) * CELL, by = (fy + 0.5) * CELL;
+    // the field is noisy (not an exact distance), so walk onto the rock surface by iterating towards the zero level
+    for (let k = 0; k < 4; k++) { const s0 = sdfAt(lv, bx, by); gradAt(lv, bx, by, gtmp); bx -= gtmp.x * s0; by -= gtmp.y * s0; }
+    if (Math.abs(sdfAt(lv, bx, by)) > 0.8) continue;
+    gradAt(lv, bx, by, gtmp);
     if (sdfAt(lv, bx + gtmp.x * 30, by + gtmp.y * 30) < 14) continue;
     const r = frng.next();
     const type = r < 0.4 ? 0 : r < 0.76 ? 1 : 2; // 0 kelp, 1 coral, 2 bulb
+    let len = type === 0 ? frng.range(34, 96) : type === 1 ? frng.range(14, 30) : frng.range(10, 20);
+    // never let a stalk poke through the opposite wall: trim it to the free room in front of it
+    const free = rayMarch(lv, bx + gtmp.x * 2, by + gtmp.y * 2, gtmp.x, gtmp.y, len + 8);
+    if (free < len) { len = free * 0.88; if (len < 10) continue; }
     flora.push({
-      x: bx, y: by, nx: gtmp.x, ny: gtmp.y, type,
-      len: type === 0 ? frng.range(34, 96) : type === 1 ? frng.range(14, 30) : frng.range(10, 20),
+      x: bx, y: by, nx: gtmp.x, ny: gtmp.y, type, len,
       hue: frng.range(-26, 26) + (frng.chance(0.16) ? 70 : 0),
       phase: frng.range(0, TAU), n: frng.int(2, 5), lit: 0,
     });
@@ -584,7 +765,8 @@ function tryGenerate(seed, depth, attempt) {
   if (depth >= 5) {
     const want = depth >= 10 ? 4 : depth >= 7 ? 3 : 2;
     const cur = [];
-    const found = place(want, { minClear: 50, minDist: 18, sep: 420 }, cur);
+    // wide open water only (a gentle push, never a squeeze against the walls), and never on top of the start
+    const found = place(want, { minClear: 52, minSdf: 50, minDist: 18, sep: 420, avoidStart: 220 }, cur);
     for (const p of found) {
       currents.push({ x: p.x, y: p.y, r: prng.range(110, 160), ang: prng.range(0, TAU), force: prng.range(70, 120) });
     }
